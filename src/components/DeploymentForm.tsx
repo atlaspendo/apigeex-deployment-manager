@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
+import * as githubService from '../services/githubService';
+import type { GitHubRepo, GitHubBranch } from '../services/githubService';
 
 // Types
 interface DeploymentState {
@@ -18,53 +20,104 @@ interface DeploymentState {
 interface GithubState {
   isAuthenticated: boolean;
   username: string;
+  token: string;
   avatarUrl: string;
   isValidating: boolean;
   error: string;
 }
 
+
+
+
 // Validation schema
 const deploymentSchema = z.object({
+  githubUsername: z.string().min(1, 'GitHub username is required'),
+  githubToken: z.string().min(1, 'GitHub personal token is required'),
   proxyName: z.string().min(1, 'Proxy name is required'),
   environmentGroup: z.string().min(1, 'Environment group is required'),
   environmentType: z.string().min(1, 'Environment type is required'),
   proxyDirectory: z.string().min(1, 'Proxy directory is required'),
-  githubUsername: z.string().min(1, 'GitHub username is required'),
-  githubToken: z.string().min(1, 'GitHub personal token is required'),
+  repository: z.string().optional(),
+  branch: z.string().optional(),
+  commitMessage: z.string().optional(),
+  createPullRequest: z.boolean().optional(),
 });
 
 type FormData = z.infer<typeof deploymentSchema>;
 
+// Environment constants
+const ENVIRONMENT_GROUPS = ['default', 'edd', 'homerun', 'wow', 'wpay'];
+const ENVIRONMENT_TYPES = ['dev', 'test-env', 'test', 'uat', 'prod'];
+const DEPLOYMENT_STEPS = [
+  'Validate Inputs',
+  'Authentication',
+  'Build & Upload',
+  'Deploy',
+  'Verify'
+];
+
 const DeploymentForm = () => {
-  // Form state
-  const { register, handleSubmit, formState: { errors }, getValues, reset } = useForm<FormData>({
-    resolver: zodResolver(deploymentSchema),
-    defaultValues: {
-      proxyName: '',
-      environmentGroup: 'default',
-      environmentType: 'dev',
-      proxyDirectory: 'apiproxy',
-      githubUsername: '',
-      githubToken: '',
-    },
-  });
+    // Form state using react-hook-form
+    const { 
+      register, 
+      handleSubmit, 
+      formState: { errors }, 
+      getValues,
+      setValue,
+      reset,
+      watch
+    } = useForm<FormData>({
+      resolver: zodResolver(deploymentSchema),
+      defaultValues: {
+        proxyName: '',
+        environmentGroup: 'default',
+        environmentType: 'dev',
+        proxyDirectory: 'apiproxy',
+        githubUsername: '',
+        githubToken: '',
+        createPullRequest: false,
+      },
+    });
+  
+    // Component state
+    const [deploymentState, setDeploymentState] = useState<DeploymentState>({
+      status: 'idle',
+      currentStep: 0,
+      logs: [],
+    });
+  
+    const [githubState, setGithubState] = useState<GithubState>({
+      isAuthenticated: false,
+      username: '',
+      token: '',
+      avatarUrl: '',
+      isValidating: false,
+      error: '',
+    });
+  
+    // Repository state
+    const [repositories, setRepositories] = useState<GitHubRepo[]>([]);
+    const [branches, setBranches] = useState<GitHubBranch[]>([]);
+    const [selectedRepo, setSelectedRepo] = useState<string>('');
+    const [selectedBranch, setSelectedBranch] = useState<string>('');
+    const [isLoadingRepos, setIsLoadingRepos] = useState(false);
+    const [isLoadingBranches, setIsLoadingBranches] = useState(false);
+  
+    // Effects
+    useEffect(() => {
+      if (githubState.isAuthenticated && githubState.token) {
+        fetchRepositories();
+      }
+    }, [githubState.isAuthenticated]);
+  
+    useEffect(() => {
+      if (selectedRepo) {
+        fetchBranches();
+      }
+    }, [selectedRepo]);
 
-  // Component state
-  const [deploymentState, setDeploymentState] = useState<DeploymentState>({
-    status: 'idle',
-    currentStep: 0,
-    logs: [],
-  });
 
-  const [githubState, setGithubState] = useState<GithubState>({
-    isAuthenticated: false,
-    username: '',
-    avatarUrl: '',
-    isValidating: false,
-    error: '',
-  });
-
-  // Helper functions
+    // Helper function for logging
   const addLog = (message: string, type: 'info' | 'error' | 'success' = 'info') => {
     setDeploymentState(prev => ({
       ...prev,
@@ -72,7 +125,42 @@ const DeploymentForm = () => {
     }));
   };
 
-  // GitHub validation
+  // GitHub API Functions
+  const fetchRepositories = async () => {
+    if (!githubState.token) return;
+    setIsLoadingRepos(true);
+    addLog('Fetching GitHub repositories...');
+    
+    try {
+      const repos = await githubService.listUserRepositories(githubState.token);
+      setRepositories(repos);
+      addLog(`Successfully fetched ${repos.length} repositories`, 'success');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to fetch repositories';
+      addLog(errorMessage, 'error');
+      setGithubState(prev => ({ ...prev, error: errorMessage }));
+    } finally {
+      setIsLoadingRepos(false);
+    }
+  };
+
+  const fetchBranches = async () => {
+    if (!selectedRepo || !githubState.token) return;
+    setIsLoadingBranches(true);
+    addLog(`Fetching branches for ${selectedRepo}...`);
+
+    try {
+      const branchList = await githubService.listBranches(githubState.token, selectedRepo);
+      setBranches(branchList);
+      addLog(`Successfully fetched ${branchList.length} branches`, 'success');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to fetch branches';
+      addLog(errorMessage, 'error');
+    } finally {
+      setIsLoadingBranches(false);
+    }
+  };
+
   const validateGitHub = async () => {
     const username = getValues('githubUsername');
     const token = getValues('githubToken');
@@ -80,7 +168,7 @@ const DeploymentForm = () => {
     if (!username || !token) {
       setGithubState(prev => ({
         ...prev,
-        error: 'Username and token are required',
+        error: 'Username and token are required'
       }));
       return;
     }
@@ -89,29 +177,42 @@ const DeploymentForm = () => {
     addLog('Validating GitHub credentials...');
 
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1500));
-
+      const response = await githubService.validateGitHubCredentials(username, token);
       setGithubState({
         isAuthenticated: true,
-        username,
-        avatarUrl: `https://github.com/${username}.png`,
+        username: response.userData.login,
+        token: token,
+        avatarUrl: response.userData.avatar_url,
         isValidating: false,
         error: '',
       });
       addLog('GitHub authentication successful', 'success');
     } catch (error) {
-      setGithubState(prev => ({
-        ...prev,
+      const errorMessage = error instanceof Error ? error.message : 'GitHub authentication failed';
+      setGithubState({
         isAuthenticated: false,
+        username: '',
+        token: '',
+        avatarUrl: '',
         isValidating: false,
-        error: 'Failed to validate GitHub credentials',
-      }));
-      addLog('GitHub authentication failed', 'error');
+        error: errorMessage,
+      });
+      addLog(`GitHub authentication failed: ${errorMessage}`, 'error');
     }
   };
 
-  // Deployment handler
+  const handleRepoSelect = (repoName: string) => {
+    setSelectedRepo(repoName);
+    setSelectedBranch('');
+    setValue('repository', repoName);
+    setValue('branch', '');
+  };
+
+  const handleBranchSelect = (branchName: string) => {
+    setSelectedBranch(branchName);
+    setValue('branch', branchName);
+  };
+
   const handleDeploy = async (data: FormData) => {
     if (!githubState.isAuthenticated) {
       addLog('GitHub authentication required', 'error');
@@ -126,29 +227,39 @@ const DeploymentForm = () => {
         error: undefined,
       }));
 
-      // Simulate deployment steps
-      const steps = [
-        'Validating deployment configuration...',
-        'Authenticating with Apigee...',
-        'Building and uploading proxy bundle...',
-        'Deploying to target environment...',
-        'Verifying deployment...',
-      ];
+      // Validate deployment configuration
+      addLog('Validating deployment configuration...');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      setDeploymentState(prev => ({ ...prev, currentStep: 1 }));
 
-      for (let i = 0; i < steps.length; i++) {
-        addLog(steps[i]);
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        setDeploymentState(prev => ({
-          ...prev,
-          currentStep: i + 1,
-        }));
+      // Authenticate with Apigee
+      addLog('Authenticating with Apigee...');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      setDeploymentState(prev => ({ ...prev, currentStep: 2 }));
+
+      // Build and upload
+      addLog('Building and uploading proxy bundle...');
+      if (selectedRepo && selectedBranch) {
+        addLog(`Using repository: ${selectedRepo}, branch: ${selectedBranch}`);
       }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      setDeploymentState(prev => ({ ...prev, currentStep: 3 }));
 
-      addLog('Deployment completed successfully!', 'success');
+      // Deploy
+      addLog('Deploying to target environment...');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      setDeploymentState(prev => ({ ...prev, currentStep: 4 }));
+
+      // Verify
+      addLog('Verifying deployment...');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       setDeploymentState(prev => ({
         ...prev,
         status: 'success',
+        currentStep: 5,
       }));
+      addLog('Deployment completed successfully!', 'success');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Deployment failed';
       setDeploymentState(prev => ({
@@ -160,7 +271,6 @@ const DeploymentForm = () => {
     }
   };
 
-  // Reset handler
   const handleReset = () => {
     reset();
     setDeploymentState({
@@ -171,10 +281,15 @@ const DeploymentForm = () => {
     setGithubState({
       isAuthenticated: false,
       username: '',
+      token: '',
       avatarUrl: '',
       isValidating: false,
       error: '',
     });
+    setSelectedRepo('');
+    setSelectedBranch('');
+    setRepositories([]);
+    setBranches([]);
   };
 
   return (
@@ -190,9 +305,9 @@ const DeploymentForm = () => {
           </p>
         </div>
 
-        {/* Content Grid */}
+        {/* Main Content Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left Column */}
+          {/* Left Column - Forms */}
           <div className="space-y-6">
             {/* GitHub Authentication Card */}
             <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
@@ -219,7 +334,7 @@ const DeploymentForm = () => {
                     )}
                   </div>
 
-                  {/* Personal Access Token */}
+                  {/* GitHub Token */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Personal Access Token
@@ -242,7 +357,7 @@ const DeploymentForm = () => {
                     />
                   </div>
 
-                  {/* Authentication Status */}
+                  {/* Auth Status */}
                   {githubState.isAuthenticated ? (
                     <div className="flex items-center space-x-3 mt-4 bg-green-50 p-4 rounded-md border border-green-100">
                       <img 
@@ -260,6 +375,7 @@ const DeploymentForm = () => {
                         onClick={() => setGithubState({
                           isAuthenticated: false,
                           username: '',
+                          token: '',
                           avatarUrl: '',
                           isValidating: false,
                           error: '',
@@ -286,6 +402,70 @@ const DeploymentForm = () => {
                 </div>
               </div>
             </div>
+
+            {/* Repository Selection Card */}
+            {githubState.isAuthenticated && (
+              <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
+                <div className="p-6">
+                  <h2 className="text-lg font-medium text-gray-900 mb-4">
+                    Repository Selection
+                  </h2>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Select Repository
+                      </label>
+                      <select
+                        value={selectedRepo}
+                        onChange={(e) => handleRepoSelect(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                      >
+                        <option value="">Select a repository</option>
+                        {repositories.map((repo) => (
+                          <option key={repo.id} value={repo.full_name}>
+                            {repo.full_name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {selectedRepo && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Select Branch
+                        </label>
+                        <select
+                          value={selectedBranch}
+                          onChange={(e) => handleBranchSelect(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                        >
+                          <option value="">Select a branch</option>
+                          {branches.map((branch) => (
+                            <option key={branch.name} value={branch.name}>
+                              {branch.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+{selectedRepo && selectedBranch && (
+                      <div className="flex items-center mt-4">
+                        <input
+                          type="checkbox"
+                          id="createPullRequest"
+                          {...register('createPullRequest')}
+                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        <label htmlFor="createPullRequest" className="ml-2 text-sm text-gray-700">
+                          Create pull request to main branch
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Deployment Configuration Card */}
             <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
@@ -319,7 +499,7 @@ const DeploymentForm = () => {
                       {...register('environmentGroup')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                     >
-                      {['default', 'edd', 'homerun', 'wow', 'wpay'].map(group => (
+                      {ENVIRONMENT_GROUPS.map(group => (
                         <option key={group} value={group}>{group}</option>
                       ))}
                     </select>
@@ -334,7 +514,7 @@ const DeploymentForm = () => {
                       {...register('environmentType')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                     >
-                      {['dev', 'test-env', 'test', 'uat', 'prod'].map(type => (
+                      {ENVIRONMENT_TYPES.map(type => (
                         <option key={type} value={type}>{type}</option>
                       ))}
                     </select>
@@ -361,22 +541,20 @@ const DeploymentForm = () => {
                   Deployment Progress
                 </h2>
                 <div className="space-y-3">
-                  {['Validate Inputs', 'Authentication', 'Build & Upload', 'Deploy', 'Verify'].map(
-                    (step, index) => (
-                      <div key={step} className="flex items-center">
-                        <div className={`w-4 h-4 rounded-full ${
-                          index < deploymentState.currentStep ? 'bg-green-500' :
-                          index === deploymentState.currentStep ? 'bg-blue-500 animate-pulse' :
-                          'border-2 border-gray-300'
-                        }`} />
-                        <span className={`ml-3 ${
-                          index <= deploymentState.currentStep ? 'text-gray-900' : 'text-gray-500'
-                        }`}>
-                          {step}
-                        </span>
-                      </div>
-                    )
-                  )}
+                  {DEPLOYMENT_STEPS.map((step, index) => (
+                    <div key={step} className="flex items-center">
+                      <div className={`w-4 h-4 rounded-full ${
+                        index < deploymentState.currentStep ? 'bg-green-500' :
+                        index === deploymentState.currentStep ? 'bg-blue-500 animate-pulse' :
+                        'border-2 border-gray-300'
+                      }`} />
+                      <span className={`ml-3 ${
+                        index <= deploymentState.currentStep ? 'text-gray-900' : 'text-gray-500'
+                      }`}>
+                        {step}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -392,7 +570,8 @@ const DeploymentForm = () => {
                     Reset
                   </button>
                   <button
-                    type="submit"
+                    type="button"
+                    onClick={handleSubmit(handleDeploy)}
                     className={`px-4 py-2 text-sm font-medium text-white rounded-md shadow-sm ${
                       deploymentState.status === 'deploying'
                         ? 'bg-blue-400 cursor-not-allowed'

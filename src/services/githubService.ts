@@ -1,41 +1,30 @@
 import axios from 'axios';
-import { GitHubCredentials, GitHubValidationResponse } from '../types/github';
+import { GitHubRepo, GitHubBranch, PRDetails, CreatePROptions } from '../types/types';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
-export const validateGitHubCredentials = async (
-  credentials: GitHubCredentials
-): Promise<GitHubValidationResponse> => {
+export const validateGitHubCredentials = async (username: string, token: string) => {
   try {
     const response = await axios.get(`${GITHUB_API_BASE}/user`, {
       headers: {
-        Authorization: `token ${credentials.personalToken}`,
+        Authorization: `Bearer ${token}`,
         Accept: 'application/vnd.github.v3+json',
       },
     });
-
     return {
       success: true,
-      message: 'Authentication successful',
-      userData: {
-        login: response.data.login,
-        name: response.data.name,
-        avatarUrl: response.data.avatar_url,
-      },
+      userData: response.data,
     };
   } catch (error) {
-    return {
-      success: false,
-      message: 'Invalid GitHub credentials',
-    };
+    throw new Error('Invalid GitHub credentials');
   }
 };
 
-export const listRepositories = async (token: string) => {
+export const listUserRepositories = async (token: string): Promise<GitHubRepo[]> => {
   try {
     const response = await axios.get(`${GITHUB_API_BASE}/user/repos`, {
       headers: {
-        Authorization: `token ${token}`,
+        Authorization: `Bearer ${token}`,
         Accept: 'application/vnd.github.v3+json',
       },
       params: {
@@ -44,9 +33,72 @@ export const listRepositories = async (token: string) => {
         per_page: 100,
       },
     });
-
     return response.data;
   } catch (error) {
     throw new Error('Failed to fetch repositories');
+  }
+};
+
+export const listBranches = async (token: string, repoFullName: string): Promise<GitHubBranch[]> => {
+  try {
+    const response = await axios.get(`${GITHUB_API_BASE}/repos/${repoFullName}/branches`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+      },
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error('Failed to fetch branches');
+  }
+};
+
+export const createPullRequest = async (
+  token: string,
+  repoFullName: string,
+  options: CreatePROptions
+): Promise<PRDetails> => {
+  try {
+    const response = await axios.post(
+      `${GITHUB_API_BASE}/repos/${repoFullName}/pulls`,
+      {
+        title: options.title,
+        body: options.description,
+        head: options.head,
+        base: options.base,
+        draft: options.draft,
+        maintainer_can_modify: options.maintainer_can_modify,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+      }
+    );
+    return response.data;
+  } catch (error) {
+    throw new Error('Failed to create pull request');
+  }
+};
+
+export const getPRStatus = async (
+  token: string,
+  repoFullName: string,
+  prNumber: number
+): Promise<PRDetails> => {
+  try {
+    const response = await axios.get(
+      `${GITHUB_API_BASE}/repos/${repoFullName}/pulls/${prNumber}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+      }
+    );
+    return response.data;
+  } catch (error) {
+    throw new Error('Failed to fetch PR status');
   }
 };

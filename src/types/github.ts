@@ -1,14 +1,23 @@
-export interface GitHubCredentials {
-    username: string;
-    personalToken: string;
+export interface GitHubRepo {
+    id: number;
+    name: string;
+    full_name: string;
+    description: string | null;
+    default_branch: string;
+    private: boolean;
   }
   
-  export interface GitHubValidationResponse {
-    success: boolean;
-    message: string;
-    userData?: {
-      login: string;
-      name?: string;
-      avatarUrl?: string;
+  export interface GitHubBranch {
+    name: string;
+    commit: {
+      sha: string;
+      url: string;
     };
+    protected: boolean;
+  }
+  
+  export interface GitHubCommit {
+    message: string;
+    branch: string;
+    createPullRequest: boolean;
   }
